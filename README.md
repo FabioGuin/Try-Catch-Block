@@ -6,6 +6,7 @@
 - [Introduzione](#introduzione)
 - [Cos'è il Try-Catch Block](#cosè-il-try-catch-block)
 - [Cosa fa](#cosa-fa)
+- [Throwable VS Exception](#throwable-vs-exception)
 - [Best Practices](#best-practices)
 - [Quando usarlo in Laravel](#quando-usarlo-in-laravel)
 - [Quando non usarlo](#quando-non-usarlo)
@@ -68,6 +69,168 @@ Il blocco `try-catch` consente di:
 3. Laravel cerca un blocco `catch` che corrisponda al tipo di eccezione
 4. Se trovato, il codice nel `catch` viene eseguito
 5. Il blocco `finally` (se presente) viene sempre eseguito
+
+---
+
+## Throwable VS Exception
+
+In PHP 7+, la gerarchia delle eccezioni è stata riorganizzata con l'introduzione dell'interfaccia `Throwable`. È importante comprendere la differenza per gestire correttamente tutti i tipi di errori.
+
+### La Gerarchia
+
+```
+Throwable (interfaccia)
+├── Error (classe base per errori fatali)
+│   ├── TypeError
+│   ├── ParseError
+│   ├── ArgumentCountError
+│   └── ...
+└── Exception (classe base per eccezioni)
+    ├── RuntimeException
+    ├── InvalidArgumentException
+    ├── ModelNotFoundException (Laravel)
+    └── ...
+```
+
+### Differenze Chiave
+
+**`Throwable`** è l'interfaccia base che può essere implementata da:
+- `Exception`: eccezioni "normali" che rappresentano condizioni eccezionali nel flusso di esecuzione
+- `Error`: errori fatali che in PHP 7+ possono essere catturati (prima di PHP 7 causavano la terminazione dello script)
+
+**`Exception`** è la classe base per le eccezioni tradizionali, usate per rappresentare condizioni eccezionali nel codice applicativo.
+
+**`Error`** è la classe base per errori fatali del motore PHP (errori di tipo, parsing, memoria, ecc.).
+
+### Quando Usare Throwable
+
+Usa `Throwable` quando vuoi catturare **qualsiasi** errore o eccezione, inclusi gli errori fatali del motore PHP:
+
+```php
+try {
+    // Codice che potrebbe generare Exception o Error
+    $result = someRiskyOperation();
+} catch (\Throwable $e) {
+    // Cattura sia Exception che Error
+    Log::error('Operation failed', ['exception' => $e]);
+    throw new CustomException('Operation failed', 0, $e);
+}
+```
+
+**Casi d'uso per `Throwable`:**
+- Operazioni critiche dove qualsiasi errore deve essere gestito
+- Wrapper di codice legacy o di terze parti che potrebbero generare `Error`
+- Operazioni che potrebbero causare errori di tipo o parsing
+
+### Quando Usare Exception
+
+Usa `Exception` quando vuoi catturare solo le eccezioni applicative, lasciando che gli `Error` fatali vengano gestiti dall'Exception Handler globale:
+
+```php
+try {
+    $user = User::findOrFail($id);
+    $order = Order::create([...]);
+} catch (ModelNotFoundException $e) {
+    // Cattura solo eccezioni specifiche
+    return response()->json(['error' => 'User not found'], 404);
+} catch (\Exception $e) {
+    // Cattura altre eccezioni applicative
+    Log::error('Order creation failed', ['exception' => $e]);
+    throw $e;
+}
+// Error fatali non vengono catturati qui, ma dall'Exception Handler globale
+```
+
+**Casi d'uso per `Exception`:**
+- Gestione di eccezioni di dominio (ModelNotFoundException, ValidationException, ecc.)
+- Operazioni applicative standard
+- La maggior parte dei casi in Laravel
+
+### Best Practice in Laravel
+
+**✅ Preferire `Exception` nella maggior parte dei casi:**
+
+Laravel gestisce già gli `Error` fatali attraverso l'Exception Handler globale. Nella maggior parte dei casi, catturare solo `Exception` è sufficiente e più specifico:
+
+```php
+// ✅ Preferire: catturare eccezioni specifiche
+try {
+    $order = $this->orderService->create($data);
+} catch (PaymentException $e) {
+    // Gestione specifica
+} catch (\Exception $e) {
+    // Altre eccezioni applicative
+}
+```
+
+**⚠️ Usare `Throwable` solo quando necessario:**
+
+Usa `Throwable` solo quando hai bisogno di gestire anche errori fatali del motore PHP, ad esempio in operazioni critiche o quando integri codice legacy:
+
+```php
+// ⚠️ Solo quando necessario: catturare anche Error fatali
+try {
+    // Codice legacy o operazione critica che potrebbe generare Error
+    $result = legacyFunction($data);
+} catch (\Throwable $e) {
+    // Gestione di qualsiasi errore, incluso Error
+    report($e);
+    throw new ServiceException('Operation failed', 0, $e);
+}
+```
+
+### Esempio Pratico
+
+**Scenario: integrazione con servizio esterno che potrebbe generare Error**
+
+```php
+class ExternalApiService
+{
+    public function callApi(string $endpoint, array $data): array
+    {
+        try {
+            // Operazione che potrebbe generare TypeError o altri Error
+            $response = $this->httpClient->post($endpoint, $data);
+            return json_decode($response->body(), true, 512, JSON_THROW_ON_ERROR);
+        } catch (\TypeError $e) {
+            // Error specifico: JSON malformato o tipo errato
+            Log::error('Type error in API call', ['exception' => $e]);
+            throw new ApiException('Invalid response format', 0, $e);
+        } catch (\Exception $e) {
+            // Eccezioni applicative (ConnectionException, TimeoutException, ecc.)
+            Log::warning('API call failed', ['exception' => $e]);
+            throw new ApiException('API call failed', 0, $e);
+        }
+        // Nota: altri Error fatali verranno gestiti dall'Exception Handler globale
+    }
+}
+```
+
+**Oppure, se vuoi catturare qualsiasi errore:**
+
+```php
+public function callApi(string $endpoint, array $data): array
+{
+    try {
+        $response = $this->httpClient->post($endpoint, $data);
+        return json_decode($response->body(), true, 512, JSON_THROW_ON_ERROR);
+    } catch (\Throwable $e) {
+        // Cattura sia Exception che Error
+        report($e);
+        throw new ApiException('API operation failed', 0, $e);
+    }
+}
+```
+
+### Riepilogo
+
+| Tipo | Quando Usare | Cosa Cattura |
+|------|--------------|--------------|
+| `Exception` | ✅ **Preferito** nella maggior parte dei casi | Solo eccezioni applicative |
+| `Throwable` | ⚠️ Solo quando necessario | Exception + Error fatali |
+| Eccezioni specifiche | ✅ **Sempre preferito** | Solo eccezioni specifiche del dominio |
+
+**Regola generale:** Inizia catturando eccezioni specifiche, poi `Exception` se necessario. Usa `Throwable` solo quando devi gestire anche errori fatali del motore PHP.
 
 ---
 
